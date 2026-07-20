@@ -4,95 +4,27 @@ from flask import Flask, jsonify, redirect, request
 
 app = Flask(__name__)
 
-M3U_FILE_PATH = "playlist.m3u"
+# Define file paths for the three separate M3U files
+M3U_FILES = {
+    "live": "xtream_live.m3u",
+    "vod": "xtream_vod.m3u",
+    "series": "xtream_series.m3u",
+}
 
 STREAMS = {"live": {}, "vod": {}, "series": {}}
 CATEGORIES = {"live": {}, "vod": {}, "series": {}}
 
 
-def classify_media(group_title, name, url):
-    """Smart classification using URL extensions, title patterns, and group tags."""
-    gt_lower = group_title.lower()
-    name_lower = name.lower()
-    url_lower = url.lower()
-
-    # 1. Check URL extensions for VOD
-    vod_extensions = (".mp4", ".mkv", ".avi", ".mov", ".flv")
-    if any(url_lower.endswith(ext) or ext in url_lower for ext in vod_extensions):
-        # Even if it's video, check if it's a TV Series episode
-        if re.search(r"s\d{1,2}\s?e\d{1,2}|season|episode|\be\d{2}\b", name_lower):
-            return "series"
-        return "vod"
-
-    # 2. Check Regex for Series (e.g., S01E01, S1 E05, Season 2, Ep 10)
-    series_regex = r"s\d{1,2}\s?e\d{1,2}|s\d{1,2}\b|season\s?\d|episode\s?\d|\bep?\d{2}\b"
-    if re.search(series_regex, name_lower) or re.search(series_regex, gt_lower):
-        return "series"
-
-    # 3. Series Group Keywords
-    series_keywords = [
-        "series",
-        "serie",
-        "s0",
-        "s1",
-        "s2",
-        "s3",
-        "tv show",
-        "shows",
-        "episodes",
-        "مسلسلات",
-        "مسلسل",
-    ]
-    if any(kw in gt_lower for kw in series_keywords):
-        return "series"
-
-    # 4. VOD / Movie Group & Name Keywords
-    vod_keywords = [
-        "movie",
-        "movies",
-        "film",
-        "films",
-        "vod",
-        "cinema",
-        "4k movie",
-        "box office",
-        "netflix",
-        "shahid",
-        "disney",
-        "hbo",
-        "apple tv",
-        "amazon",
-        "documentary",
-        "افلام",
-        "فيلم",
-        "سينما",
-    ]
-    if any(kw in gt_lower for kw in vod_keywords):
-        return "vod"
-
-    # Fallback to Live TV
-    return "live"
-
-
-def load_m3u_file():
-    global STREAMS, CATEGORIES
-    for k in STREAMS:
-        STREAMS[k].clear()
-        CATEGORIES[k].clear()
-
-    if not os.path.exists(M3U_FILE_PATH):
-        print(
-            f"[!] Warning: {M3U_FILE_PATH} not found. Place it in the server folder."
-        )
+def load_m3u_file(file_path, stype):
+    """Parses a specific M3U file into its designated stream type."""
+    if not os.path.exists(file_path):
+        print(f"[!] File not found: {file_path} (Skipping...)")
         return
 
-    counters = {
-        "live": {"cat": 1, "stream": 1},
-        "vod": {"cat": 1, "stream": 1},
-        "series": {"cat": 1, "stream": 1},
-    }
+    cat_counter = 1
+    stream_counter = 1
 
-    with open(M3U_FILE_PATH, "r", encoding="utf-8", errors="ignore") as f:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
 
     current_metadata = {}
@@ -121,39 +53,45 @@ def load_m3u_file():
             if current_metadata:
                 target_url = line
                 cat_name = current_metadata["cat_name"]
-                name = current_metadata["name"]
 
-                # Perform classification with full context
-                stype = classify_media(cat_name, name, target_url)
-
-                # Assign isolated Category ID
+                # Assign Category ID within this specific category pool
                 cat_dict = CATEGORIES[stype]
                 if cat_name not in cat_dict.values():
-                    cat_id = str(counters[stype]["cat"])
+                    cat_id = str(cat_counter)
                     cat_dict[cat_id] = cat_name
-                    counters[stype]["cat"] += 1
+                    cat_counter += 1
                 else:
                     cat_id = [k for k, v in cat_dict.items() if v == cat_name][0]
 
-                stream_id = str(counters[stype]["stream"])
-                counters[stype]["stream"] += 1
+                stream_id = str(stream_counter)
+                stream_counter += 1
 
                 STREAMS[stype][stream_id] = {
-                    "name": name,
+                    "name": current_metadata["name"],
                     "stream_icon": current_metadata["stream_icon"],
                     "category_id": cat_id,
                     "stream_id": stream_id,
                     "target_url": target_url,
-                    "type": stype,
                 }
                 current_metadata = {}
 
+    print(
+        f"[+] Loaded {file_path}: {len(STREAMS[stype])} items, {len(CATEGORIES[stype])} categories"
+    )
+
+
+def load_all_m3u_files():
+    """Clears memory and loads all 3 M3U playlists."""
+    global STREAMS, CATEGORIES
+    for k in STREAMS:
+        STREAMS[k].clear()
+        CATEGORIES[k].clear()
+
     print("\n==========================================")
-    print(f"[+] Total Streams Parsed:")
-    print(f"    - Live TV Categories : {len(CATEGORIES['live'])}")
-    print(f"    - Live TV Channels   : {len(STREAMS['live'])}")
-    print(f"    - VOD Movies         : {len(STREAMS['vod'])}")
-    print(f"    - TV Series          : {len(STREAMS['series'])}")
+    print("Loading Media Playlists...")
+    print("==========================================")
+    for stype, file_path in M3U_FILES.items():
+        load_m3u_file(file_path, stype)
     print("==========================================\n")
 
 
@@ -183,31 +121,23 @@ def xtream_api():
             },
         })
 
-    # 2. Filtered Category Endpoints
+    # 2. Category Endpoints
     if action == "get_live_categories":
-        active_ids = {data["category_id"] for data in STREAMS["live"].values()}
         return jsonify([
             {"category_id": cid, "category_name": cname, "parent_id": 0}
             for cid, cname in CATEGORIES["live"].items()
-            if cid in active_ids
         ])
 
     if action == "get_vod_categories":
-        active_ids = {data["category_id"] for data in STREAMS["vod"].values()}
         return jsonify([
             {"category_id": cid, "category_name": cname, "parent_id": 0}
             for cid, cname in CATEGORIES["vod"].items()
-            if cid in active_ids
         ])
 
     if action == "get_series_categories":
-        active_ids = {
-            data["category_id"] for data in STREAMS["series"].values()
-        }
         return jsonify([
             {"category_id": cid, "category_name": cname, "parent_id": 0}
             for cid, cname in CATEGORIES["series"].items()
-            if cid in active_ids
         ])
 
     # 3. Stream List Endpoints
@@ -298,7 +228,7 @@ def play_media(stream_type, username, password, stream_id):
     return "Stream not found", 404
 
 
-load_m3u_file()
+load_all_m3u_files()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
